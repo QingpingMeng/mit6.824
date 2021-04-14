@@ -9,7 +9,6 @@ import (
 	"net/rpc"
 	"os"
 	"sort"
-	"strings"
 )
 
 //
@@ -80,49 +79,49 @@ func HandleMapJob(job *MapJob, mapf func(string, string) []KeyValue) {
 	kva := mapf(filename, string(content))
 
 	sort.Sort(ByKey(kva))
-	intermieateFile := fmt.Sprintf("mr-%v-%v", filename, ihash(filename)%reduceCount)
-	ofile, _ := os.Create(intermieateFile)
 
-	enc := json.NewEncoder(ofile)
-	for _, kv := range kva {
-		err = enc.Encode(&kv)
-		if err != nil {
-			fmt.Printf("error encoding\n")
-		}
+	partitionedKva := make([][]KeyValue, reduceCount)
+
+	for _, v := range kva {
+		partitionKey := ihash(v.Key) % reduceCount
+		partitionedKva[partitionKey] = append(partitionedKva[partitionKey], v)
 	}
 
-	ofile.Close()
-	ReportMapTask(ReportMapTaskArgs{InputFile: filename, IntermediateFile: intermieateFile, Pid: os.Getpid()})
+	intermieateFiles := make([]string, reduceCount)
+	for i := 0; i < reduceCount; i++ {
+		intermieateFile := fmt.Sprintf("mr-%v-%v", job.MapJobNumber, i)
+		intermieateFiles[i] = intermieateFile
+		ofile, _ := os.Create(intermieateFile)
+
+		b, err := json.Marshal(partitionedKva[i])
+		if err != nil {
+			fmt.Println("Marshal error: ", err)
+		}
+		ofile.Write(b)
+
+		ofile.Close()
+	}
+
+	ReportMapTask(ReportMapTaskArgs{InputFile: filename, IntermediateFile: intermieateFiles, Pid: os.Getpid()})
 }
 
 func HandleReduceJob(job *ReduceJob, reducef func(string, []string) string) {
-	files := []string{}
-
-	for _, f := range job.IntermediateFiles {
-		if strings.HasSuffix(f, fmt.Sprintf("-%v", job.ReduceNumber)) {
-			files = append(files, f)
-		}
-	}
-
-	if len(files) == 0 {
-		ReportReduceTask(ReportReduceTaskArgs{Pid: os.Getpid(), ReduceNumber: job.ReduceNumber})
-		return
-	}
+	files := job.IntermediateFiles
 
 	intermediate := []KeyValue{}
 
 	for _, f := range files {
-		fs, _ := os.Open(f)
-		dec := json.NewDecoder(fs)
-
-		for {
-			var kv KeyValue
-			if err := dec.Decode(&kv); err != nil {
-				break
-			}
-			intermediate = append(intermediate, kv)
+		dat, err := ioutil.ReadFile(f)
+		if err != nil {
+			fmt.Println("Read error: ", err.Error())
 		}
-		fs.Close()
+		var input []KeyValue
+		err = json.Unmarshal(dat, &input)
+		if err != nil {
+			fmt.Println("Unmarshal error: ", err.Error())
+		}
+
+		intermediate = append(intermediate, input...)
 	}
 
 	sort.Sort(ByKey(intermediate))

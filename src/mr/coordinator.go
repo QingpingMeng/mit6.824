@@ -13,9 +13,10 @@ type Coordinator struct {
 	// Your definitions here.
 	workerStatus      map[int]string
 	mapStatus         map[string]string
-	reduceStatus      map[int]bool
+	mapTaskNumber     int
+	reduceStatus      map[int]string
 	nReducer          int
-	intermediateFiles []string
+	intermediateFiles map[int][]string
 	mu                sync.Mutex
 }
 
@@ -34,6 +35,13 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply
 		reply.MapJob = mapJob
 		reply.Done = false
 		c.workerStatus[args.Pid] = "busy"
+		c.mu.Unlock()
+		return nil
+	}
+
+	if !c.AllMapJobDone() {
+		reply.MapJob = mapJob
+		reply.Done = false
 		c.mu.Unlock()
 		return nil
 	}
@@ -57,15 +65,29 @@ func (c *Coordinator) ReportMapTask(args *ReportMapTaskArgs, reply *ReportMapTas
 	defer c.mu.Unlock()
 	c.mapStatus[args.InputFile] = "completed"
 	c.workerStatus[args.Pid] = "idle"
-	c.intermediateFiles = append(c.intermediateFiles, args.IntermediateFile)
+	for r := 0; r < c.nReducer; r++ {
+		c.intermediateFiles[r] = append(c.intermediateFiles[r], args.IntermediateFile[r])
+	}
 
 	return nil
+}
+
+func (c *Coordinator) AllMapJobDone() bool {
+	ret := true
+
+	for _, v := range c.mapStatus {
+		if v != "completed" {
+			ret = false
+		}
+	}
+
+	return ret
 }
 
 func (c *Coordinator) ReportReduceTask(args *ReportReduceTaskArgs, reply *ReportReduceTaskReply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.reduceStatus[args.ReduceNumber] = true
+	c.reduceStatus[args.ReduceNumber] = "completed"
 	c.workerStatus[args.Pid] = "idle"
 	return nil
 }
@@ -76,8 +98,10 @@ func (c *Coordinator) PickMapJob() *MapJob {
 		if v == "pending" {
 			job = &MapJob{}
 			job.InputFile = k
+			job.MapJobNumber = c.mapTaskNumber
 			job.ReducerCount = c.nReducer
 			c.mapStatus[k] = "running"
+			c.mapTaskNumber++
 			break
 		}
 	}
@@ -89,7 +113,7 @@ func (c *Coordinator) PickReduceJob() *ReduceJob {
 	var job *ReduceJob = nil
 	reducer := -1
 	for i, v := range c.reduceStatus {
-		if !v {
+		if v == "pending" {
 			reducer = i
 			break
 		}
@@ -101,7 +125,9 @@ func (c *Coordinator) PickReduceJob() *ReduceJob {
 
 	job = &ReduceJob{}
 	job.ReduceNumber = reducer
-	job.IntermediateFiles = c.intermediateFiles
+	job.IntermediateFiles = c.intermediateFiles[reducer]
+
+	c.reduceStatus[reducer] = "running"
 
 	return job
 }
@@ -132,7 +158,7 @@ func (c *Coordinator) Done() bool {
 	ret := true
 
 	for _, v := range c.reduceStatus {
-		if !v {
+		if v != "completed" {
 			return false
 		}
 	}
@@ -148,7 +174,7 @@ func (c *Coordinator) Done() bool {
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
-	// Your code here.
+	c.mapTaskNumber = 0
 	c.mapStatus = make(map[string]string)
 	for _, v := range files {
 		c.mapStatus[v] = "pending"
@@ -156,12 +182,13 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	c.nReducer = nReduce
 
-	c.reduceStatus = make(map[int]bool)
+	c.reduceStatus = make(map[int]string)
 	for i := 0; i < nReduce; i++ {
-		c.reduceStatus[i] = false
+		c.reduceStatus[i] = "pending"
 	}
 
 	c.workerStatus = make(map[int]string)
+	c.intermediateFiles = make(map[int][]string)
 
 	c.server()
 	return &c

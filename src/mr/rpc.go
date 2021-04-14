@@ -21,6 +21,7 @@ type Job struct {
 
 type MapJob struct {
 	InputFile    string
+	MapJobNumber int
 	ReducerCount int
 }
 
@@ -41,7 +42,7 @@ type RequestTaskReply struct {
 
 type ReportMapTaskArgs struct {
 	InputFile        string
-	IntermediateFile string
+	IntermediateFile []string
 	Pid              int
 }
 
