@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -172,7 +171,6 @@ func (c *Coordinator) CheckDeadWorker() {
 		if v.Status == "running" {
 			now := time.Now().Unix()
 			if v.StartTime > 0 && now > (v.StartTime+10) {
-				fmt.Println("killing reduce job", k)
 				c.reduceStatus[k] = JobStatus{StartTime: -1, Status: "pending"}
 				continue
 			}

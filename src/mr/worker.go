@@ -128,7 +128,10 @@ func HandleReduceJob(job *ReduceJob, reducef func(string, []string) string) {
 	sort.Sort(ByKey(intermediate))
 
 	oname := fmt.Sprintf("mr-out-%v", job.ReduceNumber)
-	ofile, _ := os.Create(oname)
+	tempFile, err := ioutil.TempFile(".", oname)
+	if err != nil {
+		fmt.Println("Error creating temp file")
+	}
 
 	i := 0
 	for i < len(intermediate) {
@@ -143,12 +146,12 @@ func HandleReduceJob(job *ReduceJob, reducef func(string, []string) string) {
 		output := reducef(intermediate[i].Key, values)
 
 		// this is the correct format for each line of Reduce output.
-		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+		fmt.Fprintf(tempFile, "%v %v\n", intermediate[i].Key, output)
 
 		i = j
 	}
 
-	ofile.Close()
+	os.Rename(tempFile.Name(), oname)
 
 	ReportReduceTask(ReportReduceTaskArgs{Pid: os.Getpid(), ReduceNumber: job.ReduceNumber})
 }
