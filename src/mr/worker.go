@@ -46,6 +46,7 @@ func Worker(mapf func(string, string) []KeyValue,
 	// Your worker implementation here.
 	for !shouldStop {
 		reply := RequestTask()
+
 		if reply.Done {
 			shouldStop = true
 			fmt.Println("All jobs done, worker exit...")
@@ -146,6 +147,8 @@ func HandleReduceJob(job *ReduceJob, reducef func(string, []string) string) {
 
 		i = j
 	}
+
+	ofile.Close()
 
 	ReportReduceTask(ReportReduceTaskArgs{Pid: os.Getpid(), ReduceNumber: job.ReduceNumber})
 }

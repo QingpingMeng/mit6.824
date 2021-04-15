@@ -1,20 +1,27 @@
 package mr
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
 	"sync"
+	"time"
 )
+
+type JobStatus struct {
+	StartTime int64
+	Status    string
+}
 
 type Coordinator struct {
 	// Your definitions here.
 	workerStatus      map[int]string
-	mapStatus         map[string]string
+	mapStatus         map[string]JobStatus
 	mapTaskNumber     int
-	reduceStatus      map[int]string
+	reduceStatus      map[int]JobStatus
 	nReducer          int
 	intermediateFiles map[int][]string
 	mu                sync.Mutex
@@ -63,7 +70,7 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply
 func (c *Coordinator) ReportMapTask(args *ReportMapTaskArgs, reply *ReportMapTaskReply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.mapStatus[args.InputFile] = "completed"
+	c.mapStatus[args.InputFile] = JobStatus{StartTime: -1, Status: "completed"}
 	c.workerStatus[args.Pid] = "idle"
 	for r := 0; r < c.nReducer; r++ {
 		c.intermediateFiles[r] = append(c.intermediateFiles[r], args.IntermediateFile[r])
@@ -76,7 +83,7 @@ func (c *Coordinator) AllMapJobDone() bool {
 	ret := true
 
 	for _, v := range c.mapStatus {
-		if v != "completed" {
+		if v.Status != "completed" {
 			ret = false
 		}
 	}
@@ -87,7 +94,7 @@ func (c *Coordinator) AllMapJobDone() bool {
 func (c *Coordinator) ReportReduceTask(args *ReportReduceTaskArgs, reply *ReportReduceTaskReply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.reduceStatus[args.ReduceNumber] = "completed"
+	c.reduceStatus[args.ReduceNumber] = JobStatus{StartTime: -1, Status: "completed"}
 	c.workerStatus[args.Pid] = "idle"
 	return nil
 }
@@ -95,12 +102,12 @@ func (c *Coordinator) ReportReduceTask(args *ReportReduceTaskArgs, reply *Report
 func (c *Coordinator) PickMapJob() *MapJob {
 	var job *MapJob = nil
 	for k, v := range c.mapStatus {
-		if v == "pending" {
+		if v.Status == "pending" {
 			job = &MapJob{}
 			job.InputFile = k
 			job.MapJobNumber = c.mapTaskNumber
 			job.ReducerCount = c.nReducer
-			c.mapStatus[k] = "running"
+			c.mapStatus[k] = JobStatus{StartTime: time.Now().Unix(), Status: "running"}
 			c.mapTaskNumber++
 			break
 		}
@@ -113,7 +120,7 @@ func (c *Coordinator) PickReduceJob() *ReduceJob {
 	var job *ReduceJob = nil
 	reducer := -1
 	for i, v := range c.reduceStatus {
-		if v == "pending" {
+		if v.Status == "pending" {
 			reducer = i
 			break
 		}
@@ -127,9 +134,50 @@ func (c *Coordinator) PickReduceJob() *ReduceJob {
 	job.ReduceNumber = reducer
 	job.IntermediateFiles = c.intermediateFiles[reducer]
 
-	c.reduceStatus[reducer] = "running"
+	c.reduceStatus[reducer] = JobStatus{StartTime: time.Now().Unix(), Status: "running"}
 
 	return job
+}
+
+func (c *Coordinator) StartTicker() {
+	ticker := time.NewTicker(10 * time.Second)
+
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				if c.Done() {
+					return
+				}
+				c.CheckDeadWorker()
+			}
+		}
+	}()
+}
+
+func (c *Coordinator) CheckDeadWorker() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k, v := range c.mapStatus {
+		if v.Status == "running" {
+			now := time.Now().Unix()
+			if v.StartTime > 0 && now > (v.StartTime+10) {
+				c.mapStatus[k] = JobStatus{StartTime: -1, Status: "pending"}
+				continue
+			}
+		}
+	}
+
+	for k, v := range c.reduceStatus {
+		if v.Status == "running" {
+			now := time.Now().Unix()
+			if v.StartTime > 0 && now > (v.StartTime+10) {
+				fmt.Println("killing reduce job", k)
+				c.reduceStatus[k] = JobStatus{StartTime: -1, Status: "pending"}
+				continue
+			}
+		}
+	}
 }
 
 //
@@ -158,7 +206,7 @@ func (c *Coordinator) Done() bool {
 	ret := true
 
 	for _, v := range c.reduceStatus {
-		if v != "completed" {
+		if v.Status != "completed" {
 			return false
 		}
 	}
@@ -175,21 +223,21 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	c.mapTaskNumber = 0
-	c.mapStatus = make(map[string]string)
+	c.mapStatus = make(map[string]JobStatus)
 	for _, v := range files {
-		c.mapStatus[v] = "pending"
+		c.mapStatus[v] = JobStatus{StartTime: -1, Status: "pending"}
 	}
 
 	c.nReducer = nReduce
 
-	c.reduceStatus = make(map[int]string)
+	c.reduceStatus = make(map[int]JobStatus)
 	for i := 0; i < nReduce; i++ {
-		c.reduceStatus[i] = "pending"
+		c.reduceStatus[i] = JobStatus{StartTime: -1, Status: "pending"}
 	}
 
 	c.workerStatus = make(map[int]string)
 	c.intermediateFiles = make(map[int][]string)
-
+	c.StartTicker()
 	c.server()
 	return &c
 }
