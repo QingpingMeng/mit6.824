@@ -380,96 +380,97 @@ func (rf *Raft) ResetElectionTimer() {
 // heartsbeats recently.
 func (rf *Raft) ticker() {
 	for !rf.killed() {
-		for {
-			select {
-			case <-rf.electionTimer.C:
-				rf.mu.Lock()
-				rf.ResetElectionTimer()
-				if rf.state == 2 { // Do not start election on leader
-					rf.mu.Unlock()
-					return
-				}
+		select {
+		case <-rf.electionTimer.C:
+			DPrintf("server %v election timer fired", rf.me)
 
-				DPrintf("server %v starting election", rf.me)
-
-				rf.state = 1 // set state to candidate
-				rf.currentTerm++
-				rf.votedFor = rf.me
-				// Send vote request
-				voteReceived := 1
-				voteGranted := 1
-				voteResultChan := make(chan bool)
-				lastLogTerm := 0
-
-				if len(rf.logs) > 0 {
-					lastLogTerm = rf.logs[len(rf.logs)-1].Term
-				}
-
-				voteArgs := RequestVoteArgs{
-					Term:         rf.currentTerm,
-					CandidateId:  rf.me,
-					LastLogIndex: len(rf.logs),
-					LastLogTerm:  lastLogTerm,
-				}
+			rf.mu.Lock()
+			rf.ResetElectionTimer()
+			if rf.state == 2 { // Do not start election on leader
 				rf.mu.Unlock()
-				for peer := 0; peer < len(rf.peers); peer++ {
-					if peer == rf.me {
-						continue
-					}
-					go func(peerId int) {
-						// DPrintf("server %v sending request vote to peer %v", rf.me, peerId)
-						voteReply := RequestVoteReply{}
-						ok := rf.sendRequestVote(peerId, &voteArgs, &voteReply)
-						if ok {
-							voteResultChan <- voteReply.VoteGranted
-						} else {
-							voteResultChan <- false
-						}
-					}(peer)
-				}
+				break
+			}
 
-				for {
-					result := <-voteResultChan
-					voteReceived++
-					if result {
-						voteGranted++
-					}
-					if voteGranted > len(rf.peers)/2 {
-						break
-					}
-					if voteReceived >= len(rf.peers) {
-						break
-					}
-				}
+			DPrintf("server %v starting election", rf.me)
 
-				// if state changed during election, ignore the couting
-				rf.mu.Lock()
-				if rf.state != 1 {
-					DPrintf("Server %v is no longer candidate", rf.me)
-					rf.mu.Unlock()
-					return
-				}
-				rf.mu.Unlock()
+			rf.state = 1 // set state to candidate
+			rf.currentTerm++
+			rf.votedFor = rf.me
+			// Send vote request
+			voteReceived := 1
+			voteGranted := 1
+			voteResultChan := make(chan bool)
+			lastLogTerm := 0
 
-				// If won election, immediately send out authorities
+			if len(rf.logs) > 0 {
+				lastLogTerm = rf.logs[len(rf.logs)-1].Term
+			}
+
+			voteArgs := RequestVoteArgs{
+				Term:         rf.currentTerm,
+				CandidateId:  rf.me,
+				LastLogIndex: len(rf.logs),
+				LastLogTerm:  lastLogTerm,
+			}
+			rf.mu.Unlock()
+			for peer := 0; peer < len(rf.peers); peer++ {
+				if peer == rf.me {
+					continue
+				}
+				go func(peerId int) {
+					// DPrintf("server %v sending request vote to peer %v", rf.me, peerId)
+					voteReply := RequestVoteReply{}
+					ok := rf.sendRequestVote(peerId, &voteArgs, &voteReply)
+					if ok {
+						voteResultChan <- voteReply.VoteGranted
+					} else {
+						voteResultChan <- false
+					}
+				}(peer)
+			}
+
+			for {
+				result := <-voteResultChan
+				voteReceived++
+				if result {
+					voteGranted++
+				}
 				if voteGranted > len(rf.peers)/2 {
-					rf.mu.Lock()
-					rf.state = 2
-					rf.mu.Unlock()
-					DPrintf("server %v won the election for term %v with %v votes", rf.me, rf.currentTerm, voteGranted)
-					rf.sendAppendEntries()
+					break
 				}
-
-			case <-rf.heartbeatTicker.C:
-				rf.mu.Lock()
-				state := rf.state
-				rf.mu.Unlock()
-				if state == 2 { // Only send heartbeat if is leader
-					DPrintf("leader %v heartbeatTicker tick", rf.me)
-					rf.sendAppendEntries()
+				if voteReceived >= len(rf.peers) {
+					break
 				}
 			}
 
+			// if state changed during election, ignore the couting
+			rf.mu.Lock()
+			if rf.state != 1 {
+				DPrintf("Server %v is no longer candidate", rf.me)
+				rf.mu.Unlock()
+				return
+			}
+			rf.mu.Unlock()
+
+			// If won election, immediately send out authorities
+			if voteGranted > len(rf.peers)/2 {
+				rf.mu.Lock()
+				rf.state = 2
+				rf.ResetElectionTimer()
+				rf.mu.Unlock()
+				DPrintf("server %v won the election for term %v with %v votes", rf.me, rf.currentTerm, voteGranted)
+				rf.sendAppendEntries()
+			}
+
+		case <-rf.heartbeatTicker.C:
+			rf.mu.Lock()
+			DPrintf("server %v in state %v heartbeat ticker fired", rf.me, rf.state)
+			state := rf.state
+			rf.mu.Unlock()
+			if state == 2 { // Only send heartbeat if is leader
+				DPrintf("leader %v heartbeatTicker tick", rf.me)
+				rf.sendAppendEntries()
+			}
 		}
 	}
 }
